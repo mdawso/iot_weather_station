@@ -50,6 +50,9 @@ def setup():
   eth_uart = UART(1, baudrate=9600, bits=8, parity=None, stop=1, tx=2, rx=1, txbuf=256, rxbuf=256, timeout=0, timeout_char=0, invert=0, flow=0)
   weather_uart = UART(2, baudrate=9600, bits=8, parity=None, stop=1, tx=39, rx=38, txbuf=256, rxbuf=256, timeout=0, timeout_char=0, invert=0, flow=0)
 
+  eth_uart.flush()
+  weather_uart.flush()
+
   # init eth and begin server
   write_interface_with_delay(eth_uart, "AT+RESTORE", 5) # restore default settings just in case
   write_interface_with_delay(eth_uart, "AT+CIPMODE=2", 1) # set esp32 to station mode
