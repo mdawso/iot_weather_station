@@ -7,7 +7,7 @@ def main():
 
     # connect to tcp server
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    host = '192.168.0.30'
+    host = '192.168.0.10'
     port = 12345
     s.connect((host, port))
 
