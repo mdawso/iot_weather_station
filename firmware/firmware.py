@@ -1,83 +1,142 @@
 import os, sys, io
 import M5
 from M5 import *
-from hardware import *
-import time
+import network
+from hardware import UART
+from umqtt import *
 
-eth_buffer = None
-weather_buffer = None
 
-eth_uart = None
-weather_uart = None
 
-def get_buffer(interface, databuffer):
-  if interface.any(): databuffer.append(interface.read(1).decode("utf-8"))
+data = None
+wlan = None
+uart1 = None
+mqtt_client = None
 
-def stringify_buffer(databuffer):
-  return "".join(str(x) for x in databuffer)
 
-def write_interface(interface, message):
-  interface.write(message+'\r\n')
+buffer2 = None
 
-def write_interface_with_delay(interface, message, delay):
-  interface.write(message+'\r\n')
-  time.sleep(delay)
-
-def read_interface(interface):
-  if interface.any(): return interface.read().decode()
-
-def read_interface_with_delay(interface, delay):
-  if interface.any(): return interface.read().decode()
-  time.sleep(delay)
-
-# datalen is length of data in bytes. idk why esp-at is like this it sucks
-def write_buffer_to_interface(interface, databuffer, datalen):
-  write_interface(interface, "AT+CIPSEND=0,"+str(datalen))
-  write_interface(interface, stringify_buffer(databuffer).encode())
-
-def write_buffer_to_interface_with_delay(interface, databuffer, datalen, delay):
-  write_interface(interface, "AT+CIPSEND=0,"+str(datalen))
-  time.sleep(delay)
-  write_interface(interface, stringify_buffer(databuffer).encode())
 
 def setup():
-  
+  global data, wlan, uart1, mqtt_client, buffer2
+
   M5.begin()
+  Widgets.fillScreen(0x000000)
+  data = Widgets.Label("data", 2, 2, 1.0, 0xffffff, 0x222222, Widgets.FONTS.DejaVu9)
 
-  global eth_buffer, weather_buffer, eth_uart, weather_uart
-  
-  # init serial interfaces
-  eth_uart = UART(1, baudrate=9600, bits=8, parity=None, stop=1, tx=2, rx=1, txbuf=256, rxbuf=256, timeout=0, timeout_char=0, invert=0, flow=0)
-  weather_uart = UART(2, baudrate=9600, bits=8, parity=None, stop=1, tx=39, rx=38, txbuf=256, rxbuf=256, timeout=0, timeout_char=0, invert=0, flow=0)
+  wlan = network.WLAN(network.STA_IF)
+  wlan.connect(ssid, password)
+  print(wlan.ifconfig()[0])
+  mqtt_client = MQTTClient(mqttBrokerName, mqttBrokerAddress, port=1883, user='', password='', keepalive=300)
+  mqtt_client.connect(clean_session=True)
+  mqtt_client.check_msg()
+  uart1 = UART(1, baudrate=9600, bits=8, parity=None, stop=1, tx=1, rx=2)
+  uart1.flush()
 
-  eth_uart.flush()
-  weather_uart.flush()
-
-  # init eth and begin server
-  write_interface_with_delay(eth_uart, "AT+RESTORE", 5) # restore default settings just in case
-  write_interface_with_delay(eth_uart, "AT+CIPMODE=2", 1) # set esp32 to station mode
-  write_interface_with_delay(eth_uart, "AT+CIPMUX=1", 1) # set esp32 to allow multiple connections
-  write_interface_with_delay(eth_uart, "AT+CIPSERVER=1,12345", 3) # begin tcp server on port 12345
-
-  # read setup info from eth uart
-  read_interface_with_delay(eth_uart, 1)
-
-  # init buffers
-  eth_buffer = []
-  weather_buffer = []
 
 def loop():
-  
+  global data, wlan, uart1, mqtt_client, buffer2
   M5.update()
-  
-  global eth_buffer, weather_buffer, eth_uart, weather_uart
-  
-  while len(weather_buffer) < 38: get_buffer(weather_uart, weather_buffer)
-  write_buffer_to_interface_with_delay(eth_uart, weather_buffer, 37, 0.2)
+  if (uart1.any()) >= 38:
+    buffer2 = uart1.read()
+    print(buffer2.decode('utf-8'))
+    data.setText(str(buffer2.decode('utf-8')))
+    # Assuming buffer2 contains the received data
 
-  weather_buffer = []
+    # Wind direction
+    winddir = buffer2[0:4].decode("utf-8")
+    if winddir[0] == 'c' and winddir[1:4] not in ['...', '---']:
+        print(f"wind dir: {winddir[1:4]}°")
+    else:
+        print("wind direction: sensor error or not available")
+
+    # Wind speed (1 minute average)
+    windspeed = buffer2[4:8].decode("utf-8")
+    if windspeed[0] == 's' and windspeed[1:4] not in ['...', '---']:
+        print(f"wind speed: {windspeed[1:4]} mph")
+    else:
+        print("wind speed: sensor error or not available")
+
+    # Gust speed (5 minute maximum)
+    gustspeed = buffer2[8:12].decode("utf-8")
+    if gustspeed[0] == 'g' and gustspeed[1:4] not in ['...', '---']:
+        print(f"gust speed: {gustspeed[1:4]} mph")
+    else:
+        print("gust speed: sensor error or not available")
+
+    # Temperature
+    temperature = buffer2[12:16].decode("utf-8")
+    if temperature[0] == 't' and temperature[1:4] not in ['...', '---']:
+        try:
+            temp_f = int(temperature[1:4])
+            print(f"temperature: {temp_f}°F")
+        except ValueError:
+            print("temperature: invalid sensor reading")
+    else:
+        print("temperature: sensor error or not available")
+
+    # Rainfall (1 hour)
+    rain1h = buffer2[16:20].decode("utf-8")
+    if rain1h[0] == 'r' and rain1h[1:4] not in ['...', '---']:
+        try:
+            rain = int(rain1h[1:4])
+            print(f"rainfall 1h: {rain * 0.01} inches")  # Convert to inches
+        except ValueError:
+            print("rainfall 1h: invalid sensor reading")
+    else:
+        print("rainfall 1h: sensor error or not available")
+
+    # Rainfall (24 hours)
+    rain24h = buffer2[20:24].decode("utf-8")
+    if rain24h[0] == 'p' and rain24h[1:4] not in ['...', '---']:
+        try:
+            rain = int(rain24h[1:4])
+            print(f"rainfall 24h: {rain * 0.01} inches")  # Convert to inches
+        except ValueError:
+            print("rainfall 24h: invalid sensor reading")
+    else:
+        print("rainfall 24h: sensor error or not available")
+
+    # Humidity
+    humidity = buffer2[24:27].decode("utf-8")
+    if humidity[0] == 'h' and humidity[1:3] not in ['..', '--']:
+        try:
+            hum = int(humidity[1:3])
+            print(f"humidity: {hum}%")
+        except ValueError:
+            print("humidity: invalid sensor reading")
+    else:
+        print("humidity: sensor error or not available")
+
+    # Barometric pressure
+    pressure = buffer2[27:33].decode("utf-8")
+    if pressure[0] == 'b' and pressure[1:5] not in ['....', '----']:
+        try:
+            press = int(pressure[1:5]) / 10  # Convert to hPa
+            print(f"pressure: {press}hPa")
+        except ValueError:
+            print("pressure: invalid sensor reading")
+    else:
+        print("pressure: sensor error or not available")
+
+    # Checksum verification (optional)
+    if len(buffer2) > 33:
+        checksum = buffer2[33:].decode("utf-8").strip()
+        if checksum.startswith('*'):
+            print(f"checksum: {checksum} (verification not implemented)")
+    if mqtt_client.isconnected():
+      mqtt_client.publish('weather/data', buffer2, qos=1)
+    else:
+      mqtt_client.reconnect()
+
 
 if __name__ == '__main__':
-  setup()
-  while True:
-    loop()
+  try:
+    setup()
+    while True:
+      loop()
+  except (Exception, KeyboardInterrupt) as e:
+    try:
+      from utility import print_error_msg
+      print_error_msg(e)
+    except ImportError:
+      print("please update to latest firmware")
